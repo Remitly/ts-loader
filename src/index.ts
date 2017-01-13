@@ -1,4 +1,5 @@
 import path = require('path');
+import fs = require('fs');
 import loaderUtils = require('loader-utils');
 import objectAssign = require('object-assign');
 import arrify = require('arrify');
@@ -7,6 +8,8 @@ require('colors');
 import instances = require('./instances');
 import interfaces = require('./interfaces');
 import utils = require('./utils');
+
+import typescript = require('typescript');
 
 let webpackInstances: any = [];
 const definitionFileRegex = /\.d\.ts$/;
@@ -27,18 +30,18 @@ function loader(this: interfaces.Webpack, contents: string) {
 
     const file = updateFileInCache(filePath, contents, instance);
 
-    const { outputText, sourceMapText } = options.transpileOnly
+    const { outputText } = options.transpileOnly
         ? getTranspilationEmit(filePath, contents, instance, this)
         : getEmit(filePath, instance, this);
 
     if (outputText === null || outputText === undefined) {
-        const additionalGuidance = filePath.indexOf('node_modules') !== -1 
+        const additionalGuidance = filePath.indexOf('node_modules') !== -1
         ? "\nYou should not need to recompile .ts files in node_modules.\nPlease contact the package author to advise them to use --declaration --outDir.\nMore https://github.com/Microsoft/TypeScript/issues/12358"
         : "";
         throw new Error(`Typescript emitted no output for ${filePath}.${additionalGuidance}`);
     }
 
-    const { sourceMap, output } = makeSourceMap(sourceMapText, outputText, filePath, contents, this);
+    const { sourceMap, output } = makeSourceMap('', outputText, filePath, contents, this);
 
     // Make sure webpack is aware that even though the emitted JavaScript may be the same as
     // a previously cached version the TypeScript may be different and therefore should be
@@ -99,6 +102,17 @@ function updateFileInCache(filePath: string, contents: string, instance: interfa
     return file;
 }
 
+function mapObject<T, S>(obj: typescript.Map<T>, operator: (val: T) => S): typescript.Map<S> {
+    const newObj: typescript.Map<S> = { __mapBrand: obj.__mapBrand };
+    for (const symbol in obj) {
+        if (symbol in obj && obj[symbol]) {
+            newObj[symbol] = operator(obj[symbol]);
+        }
+    }
+
+    return newObj;
+}
+
 function getEmit(
     filePath: string,
     instance: interfaces.TSInstance,
@@ -106,6 +120,126 @@ function getEmit(
 ) {
     // Emit Javascript
     const output = instance.languageService.getEmitOutput(filePath);
+
+    const program = instance.languageService.getProgram();
+    const checker = program.getTypeChecker();
+
+    type DocEntry = any;
+    const inspections: { [key: string]: DocEntry } = {};
+
+    console.log(filePath);
+
+    const exports = checker.getSymbolAtLocation(program.getSourceFile(filePath)).exports;
+    for (const symbol in exports) {
+        if (symbol in exports) {
+            try {
+                const flags = exports[symbol].getFlags();
+                if (flags | typescript.SymbolFlags.Function) {
+                    inspections[(exports[symbol].valueDeclaration.name! as any).text] = serializeFunction(exports[symbol]);
+                }
+            } catch (e) {
+                console.log("something's not working yet", e);
+            }
+        }
+    }
+
+    function serializeFunction(symbol: typescript.Symbol): DocEntry {
+        const type = checker.getTypeOfSymbolAtLocation(symbol, symbol.valueDeclaration);
+        return {
+            name: symbol.getName(),
+            documentation: typescript.displayPartsToString(symbol.getDocumentationComment()),
+            type: 'function',
+            parameters: type.getCallSignatures().map(serializeSignature),
+        };
+    }
+
+    function serializeInterface(symbol: typescript.Symbol): DocEntry {
+        return {
+            name: symbol.getName(),
+            documentation: typescript.displayPartsToString(symbol.getDocumentationComment()),
+            type: 'interface',
+            members: mapObject(symbol.members, serializeSymbol),
+        };
+    }
+
+    /** Serialize a symbol into a json object */
+    function serializeSymbol(symbol: typescript.Symbol): DocEntry {
+        const type = checker.getTypeOfSymbolAtLocation(symbol, symbol.valueDeclaration);
+        let serializedType: DocEntry | string;
+        if (typeof type.symbol === "undefined") {
+            serializedType = checker.typeToString(type);
+        } else {
+            serializedType = serializeInterface(type.symbol);
+        }
+        return {
+            name: symbol.getName(),
+            documentation: typescript.displayPartsToString(symbol.getDocumentationComment()),
+            type: serializedType,
+        };
+    }
+
+    /** Serialize a class symbol infomration */
+    function serializeClass(symbol: typescript.Symbol) {
+        const details = serializeSymbol(symbol);
+
+        // Get the construct signatures
+        const constructorType = checker.getTypeOfSymbolAtLocation(symbol, symbol.valueDeclaration);
+        details.constructors = constructorType.getConstructSignatures().map(serializeSignature);
+        return details;
+    }
+
+    /** Serialize a signature (call or construct) */
+    function serializeSignature(signature: typescript.Signature) {
+        return {
+            parameters: signature.parameters.map(serializeSymbol),
+            returnType: checker.typeToString(signature.getReturnType()),
+            documentation: typescript.displayPartsToString(signature.getDocumentationComment())
+        };
+    }
+
+    /** True if this is visible outside this file, false otherwise */
+    function isNodeExported(node: typescript.Node): boolean {
+        // tslint:disable-next-line:no-bitwise
+        return (node.flags & typescript.NodeFlags.ExportContext) !== 0 || (node.parent && node.parent.kind === typescript.SyntaxKind.SourceFile);
+    }
+    // }
+    //
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     // Make this file dependent on *all* definition files in the program
     loader.clearDependencies();
@@ -131,15 +265,25 @@ function getEmit(
 
     loader._module.meta.tsLoaderDefinitionFileVersions = allDefinitionFiles
         .concat(additionalDependencies)
-        .map(fp => fp + '@' + (instance.files[fp] || {version: '?'}).version);
+        .map((fp) => fp + '@' + (instance.files[fp] || {version: '?'}).version);
 
-    const outputFile = output.outputFiles.filter(f => !!f.name.match(/\.js(x?)$/)).pop();
-    const outputText = (outputFile) ? outputFile.text : undefined;
+    let outputText = `
+${fs.readFileSync(filePath).toString()}
+`;
 
-    const sourceMapFile = output.outputFiles.filter(f => !!f.name.match(/\.js(x?)\.map$/)).pop();
-    const sourceMapText = (sourceMapFile) ? sourceMapFile.text : undefined;
+    for (const symbol in inspections) {
+        if (symbol in inspections) {
+            outputText += `
+try {
+    (${symbol} as any).__inspection = ${JSON.stringify(inspections[symbol])};
+} catch (e) {
+    console.log("can't apply inspection", e);
+}
+`;
+        }
+    }
 
-    return { outputText, sourceMapText };
+    return { outputText };
 }
 
 function getTranspilationEmit(
@@ -148,6 +292,7 @@ function getTranspilationEmit(
     instance: interfaces.TSInstance,
     loader: interfaces.Webpack
 ) {
+
     const fileName = path.basename(filePath);
     const transpileResult = instance.compiler.transpileModule(contents, {
         compilerOptions: instance.compilerOptions,
