@@ -167,6 +167,10 @@ function getEmit(
 
     /** Serialize a symbol into a json object */
     function serializeSymbol(symbol: typescript.Symbol): DocEntry {
+        if (symbol.getName() === "__index") {
+            return null;
+        }
+
         const type = checker.getTypeOfSymbolAtLocation(symbol, symbol.valueDeclaration);
         let serializedType: DocEntry | string;
         if (typeof type.symbol === "undefined") {
