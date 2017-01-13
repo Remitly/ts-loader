@@ -7,7 +7,8 @@
     "build": "tsc --version && tsc --project \"./src\"",
     "comparison-tests": "npm link ./test/comparison-tests/testLib && node test/comparison-tests/run-tests.js",
     "execution-tests": "node test/execution-tests/run-tests.js",
-    "test": "node test/run-tests.js"
+    "test": "node test/run-tests.js",
+    "install": "npm run build"
   },
   "repository": {
     "type": "git",
