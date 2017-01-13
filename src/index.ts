@@ -11,11 +11,13 @@ import utils = require('./utils');
 
 import typescript = require('typescript');
 
-let webpackInstances: any = [];
+const webpackInstances: any = [];
 const definitionFileRegex = /\.d\.ts$/;
 
 function loader(this: interfaces.Webpack, contents: string) {
-    this.cacheable && this.cacheable();
+    if (this.cacheable) {
+        this.cacheable();
+    }
     const callback = this.async();
     const options = makeOptions(this);
     const rawFilePath = path.normalize(this.resourcePath);
@@ -53,9 +55,8 @@ function loader(this: interfaces.Webpack, contents: string) {
 
 function makeOptions(loader: interfaces.Webpack) {
     const queryOptions = loaderUtils.parseQuery<interfaces.LoaderOptions>(loader.query);
-    const configFileOptions = loader.options.ts || {};
-
-    const options = objectAssign<interfaces.LoaderOptions>({}, {
+    const configFileOptions: { [P in keyof interfaces.LoaderOptions]?: interfaces.LoaderOptions[P] } = loader.options.ts || {};
+    const defaultOptions: interfaces.LoaderOptions = {
         silent: false,
         logLevel: 'INFO',
         logInfoToStdOut: false,
@@ -63,11 +64,13 @@ function makeOptions(loader: interfaces.Webpack) {
         compiler: 'typescript',
         configFileName: 'tsconfig.json',
         transpileOnly: false,
+        ignoreDiagnostics: [],
         visualStudioErrorFormat: false,
         compilerOptions: {},
         appendTsSuffixTo: [],
         entryFileIsJs: false,
-    }, configFileOptions, queryOptions);
+    };
+    const options: interfaces.LoaderOptions = objectAssign<interfaces.LoaderOptions>({}, defaultOptions, configFileOptions, queryOptions);
     options.ignoreDiagnostics = arrify(options.ignoreDiagnostics).map(Number);
     options.logLevel = options.logLevel.toUpperCase();
 
@@ -85,7 +88,7 @@ function updateFileInCache(filePath: string, contents: string, instance: interfa
     // Update file contents
     let file = instance.files[filePath];
     if (!file) {
-        file = instance.files[filePath] = <interfaces.TSFile> { version: 0 };
+        file = instance.files[filePath] = { version: 0 } as interfaces.TSFile;
     }
 
     if (file.text !== contents) {
@@ -118,9 +121,6 @@ function getEmit(
     instance: interfaces.TSInstance,
     loader: interfaces.Webpack
 ) {
-    // Emit Javascript
-    const output = instance.languageService.getEmitOutput(filePath);
-
     const program = instance.languageService.getProgram();
     const checker = program.getTypeChecker();
 
@@ -129,16 +129,19 @@ function getEmit(
 
     console.log(filePath);
 
-    const exports = checker.getSymbolAtLocation(program.getSourceFile(filePath)).exports;
-    for (const symbol in exports) {
-        if (symbol in exports) {
-            try {
-                const flags = exports[symbol].getFlags();
-                if (flags | typescript.SymbolFlags.Function) {
-                    inspections[(exports[symbol].valueDeclaration.name! as any).text] = serializeFunction(exports[symbol]);
+    if (filePath.indexOf('component') > -1) {
+        const exports = checker.getSymbolAtLocation(program.getSourceFile(filePath)).exports;
+        for (const symbol in exports) {
+            if (symbol in exports) {
+                try {
+                    const flags = exports[symbol].getFlags();
+                    if (flags | typescript.SymbolFlags.Function) { // tslint:disable-line:no-bitwise
+                        debugger;
+                        inspections[(exports[symbol].valueDeclaration.name! as any).text] = serializeFunction(exports[symbol]);
+                    }
+                } catch (e) {
+                    console.log("something's not working yet", e);
                 }
-            } catch (e) {
-                console.log("something's not working yet", e);
             }
         }
     }
@@ -171,11 +174,54 @@ function getEmit(
         } else {
             serializedType = serializeInterface(type.symbol);
         }
+
+        const baseNode = symbol.valueDeclaration;
+        let defaults: any = {};
+        switch (baseNode.kind) {
+            case typescript.SyntaxKind.Parameter:
+                defaults = serializeParameter(baseNode as typescript.ParameterDeclaration);
+                break;
+            default:
+                break;
+        }
+
         return {
             name: symbol.getName(),
             documentation: typescript.displayPartsToString(symbol.getDocumentationComment()),
             type: serializedType,
+            defaults,
         };
+    }
+
+    function nodeIsObjectBindingPattern(x: typescript.Node): x is typescript.ObjectBindingPattern {
+        return x.kind === typescript.SyntaxKind.ObjectBindingPattern;
+    }
+
+    function nodeIsStringLiteral(x: typescript.Node): x is typescript.StringLiteral {
+        return x.kind === typescript.SyntaxKind.StringLiteral;
+    }
+
+    function nodeIsNumericLiteral(x: typescript.Node): x is typescript.NumericLiteral {
+        return x.kind === typescript.SyntaxKind.NumericLiteral;
+    }
+
+    function serializeParameter(node: typescript.ParameterDeclaration): DocEntry {
+        const parameterDefaults: DocEntry = {};
+        if (nodeIsObjectBindingPattern(node.name)) {
+            for (const elementNode of node.name.elements) {
+                if (elementNode.initializer) {
+                    const name = elementNode.name.getText();
+                    if (nodeIsStringLiteral(elementNode.initializer)) {
+                        parameterDefaults[name] = elementNode.initializer.text;
+                    } else if (nodeIsNumericLiteral(elementNode.initializer)) {
+                        parameterDefaults[name] = parseFloat(elementNode.initializer.text);
+                    } else {
+                        console.warn('unable to parse default for parameter', name);
+                    }
+                }
+            }
+        }
+        return parameterDefaults;
     }
 
     /** Serialize a class symbol infomration */
@@ -202,60 +248,13 @@ function getEmit(
         // tslint:disable-next-line:no-bitwise
         return (node.flags & typescript.NodeFlags.ExportContext) !== 0 || (node.parent && node.parent.kind === typescript.SyntaxKind.SourceFile);
     }
-    // }
-    //
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     // Make this file dependent on *all* definition files in the program
     loader.clearDependencies();
     loader.addDependency(filePath);
 
-    const allDefinitionFiles = Object.keys(instance.files).filter(fp => definitionFileRegex.test(fp));
+    const allDefinitionFiles = Object.keys(instance.files).filter((fp) => definitionFileRegex.test(fp));
     allDefinitionFiles.forEach(loader.addDependency.bind(loader));
-
-    /* - alternative approach to the below which is more correct but has a heavy performance cost
-         see https://github.com/TypeStrong/ts-loader/issues/393
-         with this approach constEnumReExportWatch test will pass; without it, not.
-
-    // Additionally make this file dependent on all imported files as well
-    // as any deeper recursive dependencies
-    const additionalDependencies = utils.collectAllDependencies(instance.dependencyGraph, filePath);
-    */
 
     // Additionally make this file dependent on all imported files
     const additionalDependencies = instance.dependencyGraph[filePath];
