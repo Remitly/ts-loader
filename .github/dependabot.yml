@@ -1,0 +1,53 @@
+version: 2
+registries:
+  npm-registry-npm-int-remitly-com:
+    type: npm-registry
+    url: https://npm.int.remitly.com
+    token: "${{secrets.NPM_REGISTRY_NPM_INT_REMITLY_COM_TOKEN}}"
+
+updates:
+- package-ecosystem: npm
+  directory: "/"
+  schedule:
+    interval: daily
+    time: "15:00"
+  open-pull-requests-limit: 10
+  ignore:
+  - dependency-name: webpack
+    versions:
+    - 2.7.0
+    - 5.24.0
+    - 5.24.1
+    - 5.24.2
+    - 5.24.3
+    - 5.24.4
+    - 5.25.0
+    - 5.25.1
+    - 5.26.1
+    - 5.26.3
+    - 5.27.2
+    - 5.28.0
+    - 5.30.0
+    - 5.31.0
+    - 5.31.2
+    - 5.32.0
+    - 5.33.2
+    - 5.35.0
+    - 5.35.1
+  - dependency-name: jasmine-core
+    versions:
+    - 3.6.0
+    - 3.7.0
+  - dependency-name: mocha
+    versions:
+    - 8.2.1
+    - 8.3.0
+    - 8.3.1
+  - dependency-name: enhanced-resolve
+    versions:
+    - 5.7.0
+  - dependency-name: escape-string-regexp
+    versions:
+    - 4.0.0
+  registries:
+  - npm-registry-npm-int-remitly-com
